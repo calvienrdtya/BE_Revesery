@@ -1,0 +1,40 @@
+{
+  "title": "Penerapan Algoritma Random Forest dengan Explainable AI (SHAP) untuk Analisis Faktor Customer Churn sebagai Pendukung Strategi Retensi Pelanggan pada Revesery Store",
+  "researcher": "[Nama Peneliti]",
+  "student_id": "[NIM]",
+  "advisor": "[Nama Dosen Pembimbing]",
+  "university": "[Nama Universitas]",
+  "faculty": "Fakultas Ilmu Komputer",
+  "program": "Program Studi Sistem Informasi",
+  "year": 2025,
+  "method": "Kuantitatif — CRISP-DM",
+  "algorithm": "Random Forest Classifier",
+  "xai": "SHAP (SHapley Additive exPlanations)",
+  "dataset_source": "Data transaksi pelanggan Revesery Store",
+  "flow": [
+    {
+      "step": "Pengumpulan Data",
+      "detail": "Ekstraksi data transaksi & profil pelanggan Revesery Store."
+    },
+    {
+      "step": "Preprocessing",
+      "detail": "Pembersihan data, encoding, dan penanganan class imbalance."
+    },
+    {
+      "step": "Pemodelan",
+      "detail": "Pelatihan Random Forest & tuning hyperparameter di Google Colab."
+    },
+    {
+      "step": "Evaluasi",
+      "detail": "Pengukuran accuracy, precision, recall, F1, dan ROC-AUC."
+    },
+    {
+      "step": "Interpretasi SHAP",
+      "detail": "Analisis faktor churn secara global & lokal."
+    },
+    {
+      "step": "Strategi Retensi",
+      "detail": "Perumusan rekomendasi bisnis berbasis temuan."
+    }
+  ]
+}
