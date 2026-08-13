@@ -178,6 +178,34 @@ def clean(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[dict]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STAGE 1.5 — Penyamaran (masking) angka finansial
+# ─────────────────────────────────────────────────────────────────────────────
+def mask_financials(df: pd.DataFrame) -> pd.DataFrame:
+    """Jitter Gross Revenue/COGS ±5% (reproducible, seed tetap) supaya nominal
+    transaksi asli tidak bocor, sementara struktur & rank antar-transaksi
+    tetap terjaga. Net Revenue & % Margin dihitung ulang dari angka
+    tersamarkan agar tetap konsisten. Konsisten dengan Revesery_Store.ipynb
+    (Cell 3) — dijalankan di posisi yang sama: setelah clean(), sebelum
+    feature_engineering(), supaya urutan baris & hasil jitter reproducible
+    sama persis dengan notebook riset.
+    """
+    df = df.copy()
+    rng = np.random.default_rng(RANDOM_STATE)
+    faktor = rng.uniform(0.95, 1.05, size=len(df))
+
+    df["Gross Revenue"] = (df["Gross Revenue"] * faktor).round(-2).astype(int)
+    if "COGS" in df.columns:
+        df["COGS"] = (df["COGS"] * faktor).round(-2).astype(int)
+        df["Net Revenue"] = df["Gross Revenue"] - df["COGS"]
+        df["% Margin"] = np.where(
+            df["Gross Revenue"] > 0,
+            (df["Net Revenue"] / df["Gross Revenue"] * 100).round(1),
+            0,
+        )
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # STAGE 2 — Feature Engineering & Label
 # ─────────────────────────────────────────────────────────────────────────────
 def feature_engineering(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -253,9 +281,14 @@ def train_model(cust: pd.DataFrame):
     y = data["churn"]
 
     if y.nunique() < 2:
+        satu_label = "churn" if bool(y.iloc[0]) else "aktif (tidak churn)"
         raise DataValidationError(
-            "Label churn hanya punya satu kelas — tak bisa latih model. "
-            "Cek CHURN_DAYS atau rentang tanggal data."
+            f"Semua {len(y)} pelanggan berlabel '{satu_label}' — tak ada variasi label churn, "
+            "model tak bisa dilatih. Ini biasanya terjadi kalau rentang tanggal dataset terlalu "
+            f"pendek dibanding CHURN_DAYS (saat ini {config.CHURN_DAYS} hari): belum ada langganan "
+            "yang benar-benar lewat masa berlakunya per tanggal snapshot (transaksi terakhir di "
+            "dataset). Perbaikan: unggah data dengan rentang tanggal lebih panjang, atau turunkan "
+            "CHURN_DAYS lewat environment variable."
         )
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -357,6 +390,7 @@ def run_pipeline(source: bytes | str | Path | None = None) -> dict:
     n_raw = len(df_raw)
 
     df, clean_log = _stage("clean", clean, df_raw)
+    df = _stage("mask_financials", mask_financials, df)
     cust, df_fe = _stage("feature_engineering", feature_engineering, df)
     (
         best_rf, X_train, X_test, y_train, y_test,
@@ -586,6 +620,58 @@ def _build_shap(shap_churn, importance: pd.Series, X_test: pd.DataFrame, model, 
     ]
     contribs.sort(key=lambda x: abs(x["value"]), reverse=True)
 
+    # Force plot — pakai pelanggan yang sama dengan waterfall (paling berisiko
+    # churn) supaya narasi "satu pelanggan" konsisten lintas visualisasi lokal.
+    force = {
+        "base_value": round(base_value, 4),
+        "prediction": round(float(churn_proba[highest_risk_idx]), 4),
+        "features": contribs[:10],
+    }
+
+    # Decision plot — jalur akumulasi kontribusi fitur (base value → prediksi)
+    # untuk beberapa pelanggan: risiko tertinggi, risiko terendah, + beberapa
+    # sampel acak, supaya terlihat di mana jalur keputusan mulai bercabang.
+    lowest_risk_idx = int(np.argmin(churn_proba))
+    rng = np.random.RandomState(7)
+    extra_n = min(4, max(0, len(X_test) - 2))
+    extra_idx = [
+        i for i in rng.choice(len(X_test), extra_n, replace=False).tolist()
+        if i not in (highest_risk_idx, lowest_risk_idx)
+    ]
+    decision_idx = [highest_risk_idx, lowest_risk_idx] + extra_idx
+    decision_features = top_features[:8]
+    decision_paths = []
+    for i in decision_idx:
+        running = base_value
+        cumulative = []
+        for feat in decision_features:
+            running += float(shap_churn[i, list(X_test.columns).index(feat)])
+            cumulative.append(round(running, 4))
+        decision_paths.append({
+            "label": f"Pelanggan #{i} (P={churn_proba[i]:.2f})",
+            "cumulative": cumulative,
+        })
+    decision = {
+        "base_value": round(base_value, 4),
+        "features": decision_features,
+        "paths": decision_paths,
+    }
+
+    # Dependence plot — fitur paling penting sebagai sumbu-X, diwarnai oleh
+    # fitur penting kedua untuk menunjukkan efek interaksi antar fitur.
+    dep_feature = top_features[0]
+    dep_fi = list(X_test.columns).index(dep_feature)
+    dependence: dict[str, Any] = {
+        "feature": dep_feature,
+        "x": [round(v, 4) for v in X_test.iloc[idx, dep_fi].astype(float).tolist()],
+        "shap": [round(v, 5) for v in shap_churn[idx, dep_fi].tolist()],
+    }
+    if len(top_features) > 1:
+        dep_color_feature = top_features[1]
+        dep_color_fi = list(X_test.columns).index(dep_color_feature)
+        dependence["color_feature"] = dep_color_feature
+        dependence["color"] = [round(v, 4) for v in X_test.iloc[idx, dep_color_fi].astype(float).tolist()]
+
     return {
         "global_importance": global_importance,
         "summary": summary,
@@ -594,6 +680,9 @@ def _build_shap(shap_churn, importance: pd.Series, X_test: pd.DataFrame, model, 
             "prediction": round(float(churn_proba[highest_risk_idx]), 4),
             "contributions": contribs[:10],
         },
+        "force": force,
+        "decision": decision,
+        "dependence": dependence,
     }
 
 
