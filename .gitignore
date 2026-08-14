@@ -1,0 +1,39 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# ── Virtual environment ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Environment / secrets ───────────────────────────────────────────────────
+.env
+!.env.example
+
+# ── Data runtime (hasil pipeline, upload, lock) ─────────────────────────────
+# research.json TIDAK di-ignore — itu metadata riset statis, bukan hasil pipeline.
+data/*.xlsx
+data/result.json
+data/.training.lock
+
+# ── Contoh dataset (xlsx besar, bukan source code) ──────────────────────────
+contoh-dataset/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# ── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+nb_dump.txt
