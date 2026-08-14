@@ -322,7 +322,7 @@ def train_model(cust: pd.DataFrame):
     prec_vals, rec_vals, _ = precision_recall_curve(y_test, proba)
     roc_auc = roc_auc_score(y_test, proba)
 
-    return best_rf, X_train, X_test, y_train, y_test, pred, proba, report, cm, fpr, tpr, prec_vals, rec_vals, roc_auc
+    return best_rf, X, X_train, X_test, y_train, y_test, pred, proba, report, cm, fpr, tpr, prec_vals, rec_vals, roc_auc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -393,10 +393,13 @@ def run_pipeline(source: bytes | str | Path | None = None) -> dict:
     df = _stage("mask_financials", mask_financials, df)
     cust, df_fe = _stage("feature_engineering", feature_engineering, df)
     (
-        best_rf, X_train, X_test, y_train, y_test,
+        best_rf, X, X_train, X_test, y_train, y_test,
         pred, proba, report, cm, fpr, tpr, prec_vals, rec_vals, roc_auc
     ) = _stage("train_model", train_model, cust)
     shap_churn, importance, base_value = _stage("compute_shap", compute_shap, best_rf, X_test)
+
+    # Skor risiko churn seluruh pelanggan (bukan cuma X_test) — dasar segmentasi retensi.
+    churn_proba_all = best_rf.predict_proba(X)[:, 1]
 
     # ── Build result dict ──────────────────────────────────
     churn_count = int(cust["churn"].sum())
@@ -476,8 +479,8 @@ def run_pipeline(source: bytes | str | Path | None = None) -> dict:
             "method": "mean |SHAP|",
         },
         "shap": _build_shap(shap_churn, importance, X_test, best_rf, base_value),
-        "insight": _build_insight(importance),
-        "retention": _build_retention(importance),
+        "insight": _build_insight(shap_churn, X_test.columns, importance),
+        "retention": _build_retention(churn_proba_all),
     }
 
     logger.info(
@@ -686,22 +689,37 @@ def _build_shap(shap_churn, importance: pd.Series, X_test: pd.DataFrame, model, 
     }
 
 
-def _build_insight(importance: pd.Series) -> dict:
-    top = importance.head(5)
-    top_factors = [
-        {
+def _build_insight(shap_churn: np.ndarray, feature_names: pd.Index, importance: pd.Series) -> dict:
+    # Arah dulu di-hardcode "decrease" buat semua fitur — sekarang dihitung dari
+    # mean SHAP BERTANDA (bukan abs): positif = mendorong churn (increase),
+    # negatif = menahan churn (decrease/protektif).
+    # ponytail: shap_churn kolomnya urutan asli X_test.columns (BUKAN urutan importance
+    # yang sudah disortir abs-desc) — index harus feature_names, jangan importance.index,
+    # kalau tidak signed value ke-pasang ke nama fitur yang salah.
+    signed_mean = pd.Series(shap_churn.mean(0), index=feature_names)
+    direction = signed_mean.apply(lambda v: "increase" if v > 0 else "decrease")
+
+    def make_factor(feat: str) -> dict:
+        return {
             "feature": feat,
-            "impact": round(float(val), 6),
-            "direction": "decrease",
+            "impact": round(float(importance[feat]), 6),
+            "direction": direction[feat],
             "description": _feature_description(feat),
         }
-        for feat, val in top.items()
-    ]
-    dominant = top.index[0]
+
+    # Top-5 per arah (bukan top-5 gabungan) — kalau top-5 gabungan semuanya
+    # kebetulan searah, panel "meningkatkan risiko" bisa kosong padahal ada
+    # fitur increase di ranking bawahnya.
+    increasing = importance[direction == "increase"].sort_values(ascending=False).head(5)
+    decreasing = importance[direction == "decrease"].sort_values(ascending=False).head(5)
+    top_factors = [make_factor(f) for f in increasing.index] + [make_factor(f) for f in decreasing.index]
+
+    dominant = importance.index[0]  # paling berpengaruh overall (abs SHAP), arah apa pun
     return {
         "top_factors": top_factors,
         "dominant_factor": {
             "feature": dominant,
+            "direction": direction[dominant],
             "description": _feature_description(dominant),
         },
         "narrative": [
@@ -732,7 +750,10 @@ def _feature_description(feat: str) -> str:
     return descs.get(feat, f"Fitur {feat} dari perilaku pelanggan.")
 
 
-def _build_retention(importance: pd.Series) -> dict:
+def _build_retention(churn_proba: np.ndarray) -> dict:
+    # ponytail: expected_impact adalah ESTIMASI/ASUMSI bisnis (bukan hasil model/uji A-B) —
+    # impact_basis wajib disertakan di setiap strategi supaya tak terbaca sebagai angka terukur.
+    IMPACT_BASIS = "Estimasi/asumsi bisnis, belum divalidasi secara statistik (bukan hasil model)."
     strategies = [
         {
             "id": "loyalty-reward",
@@ -743,6 +764,7 @@ def _build_retention(importance: pd.Series) -> dict:
             "linked_factors": ["total_belanja", "rata_belanja"],
             "priority": "Tinggi",
             "expected_impact": "Menurunkan churn rate 8-12%",
+            "impact_basis": IMPACT_BASIS,
         },
         {
             "id": "multi-bulan",
@@ -753,6 +775,7 @@ def _build_retention(importance: pd.Series) -> dict:
             "linked_factors": ["total_bulan_langganan", "rata_bulan"],
             "priority": "Tinggi",
             "expected_impact": "Meningkatkan tenure rata-rata 45 hari",
+            "impact_basis": IMPACT_BASIS,
         },
         {
             "id": "winback-email",
@@ -763,6 +786,7 @@ def _build_retention(importance: pd.Series) -> dict:
             "linked_factors": ["rata_jeda_hari", "tenure_hari"],
             "priority": "Sedang",
             "expected_impact": "Re-aktivasi 15-20% pelanggan lapse",
+            "impact_basis": IMPACT_BASIS,
         },
         {
             "id": "payment-assist",
@@ -773,6 +797,7 @@ def _build_retention(importance: pd.Series) -> dict:
             "linked_factors": ["rasio_gagal", "jumlah_gagal"],
             "priority": "Tinggi",
             "expected_impact": "Mengurangi gagal bayar 25-30%",
+            "impact_basis": IMPACT_BASIS,
         },
         {
             "id": "cross-sell",
@@ -783,13 +808,25 @@ def _build_retention(importance: pd.Series) -> dict:
             "linked_factors": ["produk_unik"],
             "priority": "Sedang",
             "expected_impact": "Meningkatkan LTV pelanggan 20%",
+            "impact_basis": IMPACT_BASIS,
         },
     ]
 
+    # Segmentasi risiko dari skor prediksi model (predict_proba) seluruh pelanggan —
+    # sebelumnya salah pakai len(importance) yaitu JUMLAH FITUR, bukan jumlah pelanggan.
+    proba = np.asarray(churn_proba)
+    bands = [
+        ("High Risk", proba >= 0.6),
+        ("Medium Risk", (proba >= 0.3) & (proba < 0.6)),
+        ("Low Risk", proba < 0.3),
+    ]
     segments = [
-        {"name": "High Risk", "size": int(len(importance) * 0.25), "churn_risk": 0.75},
-        {"name": "Medium Risk", "size": int(len(importance) * 0.35), "churn_risk": 0.40},
-        {"name": "Low Risk", "size": int(len(importance) * 0.40), "churn_risk": 0.10},
+        {
+            "name": name,
+            "size": int(mask.sum()),
+            "churn_risk": round(float(proba[mask].mean()), 4) if mask.any() else 0.0,
+        }
+        for name, mask in bands
     ]
     return {"segments": segments, "strategies": strategies}
 
