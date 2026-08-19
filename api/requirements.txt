@@ -1,0 +1,5 @@
+# Dependency KHUSUS function serverless api/index.py — sengaja tanpa
+# pandas/numpy/scikit-learn/shap (gak dipakai; endpoint cuma baca JSON snapshot).
+# Requirements.txt di root repo (buat backend penuh via Docker) tidak dipakai
+# di sini, Vercel memprioritaskan requirements.txt yang colocated dengan fungsi.
+fastapi==0.115.6
