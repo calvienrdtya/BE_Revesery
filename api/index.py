@@ -55,9 +55,15 @@ app = FastAPI(
     version="1.1.0-readonly",
 )
 
+# Selalu izinkan origin FE production, apa pun isi env CORS_ORIGINS di Vercel —
+# supaya dashboard tidak ikut ke-block kalau env var lupa/belum diisi benar.
+_DEFAULT_ORIGINS = ["https://fe-revesery.vercel.app"]
+_env_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+_allow_origins = _env_origins + [o for o in _DEFAULT_ORIGINS if o not in _env_origins]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()],
+    allow_origins=_allow_origins,
     allow_credentials=False,  # read-only publik, tak ada auth cookie — aman dipasangkan wildcard.
     allow_methods=["GET"],
     allow_headers=["*"],
